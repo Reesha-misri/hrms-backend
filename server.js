@@ -14,19 +14,22 @@ let db;
 
 async function initDB() { 
   try {
-    db = await mysql.createConnection({
-      host: "localhost",
-      user: "root",
-      password: "Admin@123", 
-      database: "COMPANY",
+    db = mysql.createPool({
+      host: process.env.host,
+      user: process.env.user,
+      password: process.env.password, 
+      database: process.env.database,
+      waitForConnections: true,
+      connectionLimit: 10,
+      queueLimit: 0
     });
 
-    console.log("✅ Connected to MySQL Database");
+    console.log("✅ MySQL Connection Pool Created");
 
-    // Start server after DB is ready
-    app.listen(3001, () => console.log("🚀 Server running on port 3001"));
+    // Start server after DB is ready (Pool doesn't need to wait for a single connection)
+    app.listen(process.env.port, () => console.log(`🚀 Server running on port ${process.env.port}`));
   } catch (err) {
-    console.error("Database connection failed:", err);
+    console.error("Database pool creation failed:", err);
   }
 }
 initDB();
@@ -105,104 +108,175 @@ app.get("/employees", async (req, res) => {
 });
 
 app.post("/add-employee", async (req, res) => {
+  const connection = await db.getConnection(); // Get a connection for the transaction
   try {
     const {
       employee_id,
       full_name,
       email,
-      password, // added for login
+      password,
       department_name,
       designation_id,
       role_id,
       manager_id,
       communication_address,
       permanent_address,
+      basic,
+      allowance,
+      deduction
     } = req.body;
 
+    // 🔹 Input Sanitization: Convert empty strings to null for integer/optional fields
+    const nid = designation_id === "" ? null : designation_id;
+    const rid = role_id === "" ? null : role_id;
+    const mid = manager_id === "" ? null : manager_id;
+    const b = basic === "" ? 0 : basic;
+    const a = allowance === "" ? 0 : allowance;
+    const d = deduction === "" ? 0 : deduction;
+
+    await connection.beginTransaction();
+    console.log(`[START] Adding Employee ${employee_id}`);
+
     // 1️⃣ Insert into employee table
-    const [result] = await db.execute(
+    await connection.execute(
       `INSERT INTO employee
       (employee_id, full_name, email, department_name, designation_id, role_id, manager_id, communication_address, permanent_address)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [employee_id, full_name, email, department_name, designation_id, role_id, manager_id || null, communication_address, permanent_address]
+      [employee_id, full_name, email, department_name, nid, rid, mid, communication_address, permanent_address]
     );
-    await db.execute(
+    console.log("✅ Step 1: Employee table updated");
+
+    // 2️⃣ Insert into users table
+    await connection.execute(
       `INSERT INTO users (employee_id, email, password, role_id)
       VALUES (?, ?, ?, ?)`,
-      [employee_id, email, "123456", role_id]
-      );
-    await db.execute(
+      [employee_id, email, password || "123456", rid]
+    );
+    console.log("✅ Step 2: Users table updated");
+
+    // 3️⃣ Log action
+    await connection.execute(
       "INSERT INTO audit_log (employee_id, action) VALUES (?, ?)",
       [employee_id, "Employee Created"]
-      );
-    // create default leave balance
-   await db.execute(
-  "INSERT INTO leave_balance (employee_id) VALUES (?)",
-  [employee_id]
-  ); 
+    );
 
+    // 4️⃣ Create default leave balance
+    await connection.execute(
+      "INSERT INTO leave_balance (employee_id) VALUES (?)",
+      [employee_id]
+    );
+    console.log("✅ Step 3: Leave balance created");
 
+    // 5️⃣ Insert into salary structure
+    await connection.execute(
+      `INSERT INTO salary_structure (employee_id, basic, allowance, deduction)
+       VALUES (?, ?, ?, ?)`,
+      [employee_id, b, a, d]
+    );
+    console.log("✅ Step 4: Salary structure created");
 
-    // 2️⃣ Insert into users table for login
-await db.execute(
-  `INSERT INTO users (employee_id, email, password, role_id)
-   VALUES (?, ?, ?, ?)`,
-  [employee_id, email, password || "123456", role_id]
-);
-// After inserting employee and users
-await db.execute(
-  `INSERT INTO salary_structure (employee_id, basic, allowance, deduction)
-   VALUES (?, ?, ?, ?)`,
-  [employee_id, basic || 0, allowance || 0, deduction || 0]
-);
+    await connection.commit();
+    console.log(`[COMMIT] Employee ${employee_id} added successfully`);
+    res.send("Employee added successfully");
 
-    res.send("Employee added successfully with login");
   } catch (err) {
-    console.error("ADD EMPLOYEE DB ERROR:", err);
-    res.status(500).send("Database Error");
+    await connection.rollback();
+    console.error("ADD EMPLOYEE TRANSACTION ERROR:", err);
+    if (err.code === "ER_DUP_ENTRY") {
+      return res.status(400).send("Duplicate Entry: Employee ID or Email already exists.");
+    }
+    res.status(500).send(`Database Error: ${err.message}`);
+  } finally {
+    connection.release();
   }
 });
 
 // 🔹 UPDATE EMPLOYEE (with login update)
 app.put("/update-employee/:id", async (req, res) => {
+  const connection = await db.getConnection();
+  const id = parseInt(req.params.id);
   try {
-    const { id } = req.params;
     const {
       full_name,
       email,
-      password, // added for login update
+      password,
       department_name,
       designation_id,
       role_id,
       manager_id,
       communication_address,
       permanent_address,
+      basic,
+      allowance,
+      deduction
     } = req.body;
 
+    // 🔹 Input Sanitization: Convert empty strings to null for integer/optional fields
+    const nid = designation_id === "" ? null : designation_id;
+    const rid = role_id === "" ? null : role_id;
+    const mid = manager_id === "" ? null : manager_id;
+    const b = basic === "" ? 0 : basic;
+    const a = allowance === "" ? 0 : allowance;
+    const d = deduction === "" ? 0 : deduction;
+
+    await connection.beginTransaction();
+    console.log(`[START] Updating Employee ${id}`);
+
     // 1️⃣ Update employee table
-    await db.execute(
+    await connection.execute(
       `UPDATE employee SET full_name=?, email=?, department_name=?, designation_id=?, role_id=?, manager_id=?, communication_address=?, permanent_address=? WHERE employee_id=?`,
-      [full_name, email, department_name, designation_id, role_id, manager_id || null, communication_address, permanent_address, id]
+      [full_name, email, department_name, nid, rid, mid, communication_address, permanent_address, id]
     );
-    await db.execute(
-      "INSERT INTO audit_log (employee_id, action) VALUES (?,?)",
-      [id,"Employee Updated"]
+    console.log("✅ Step 1: Employee table updated");
+
+    await connection.execute(
+      "INSERT INTO audit_log (employee_id, action) VALUES (?, ?)",
+      [id, "Employee Updated"]
+    );
+
+    // 2️⃣ Update users table
+    if (password) {
+      await connection.execute(
+        `UPDATE users SET email=?, role_id=?, password=? WHERE employee_id=?`,
+        [email, rid, password, id]
       );
+    } else {
+      await connection.execute(
+        `UPDATE users SET email=?, role_id=? WHERE employee_id=?`,
+        [email, rid, id]
+      );
+    }
+    console.log("✅ Step 2: Users table updated");
 
-    // 2️⃣ Update users table for login
-    await db.execute(
-      `UPDATE users SET email=?,role_id=? WHERE employee_id=?`,
-      [email,role_id,id]
-    );
-    await db.execute(
+    // 3️⃣ Update salary structure
+    console.log(`[Updating Salary] For Employee ${id}: basic=${b}, allowance=${a}, deduction=${d}`);
+    const [salaryResult] = await connection.execute(
       `UPDATE salary_structure SET basic=?, allowance=?, deduction=? WHERE employee_id=?`,
-      [basic || 0, allowance || 0, employee_id]
+      [b, a, d, id]
     );
 
-    res.send("Employee updated successfully with login");
+    if (salaryResult.affectedRows === 0) {
+      console.log("⚠️ Salary structure not found, creating new record...");
+      await connection.execute(
+        `INSERT INTO salary_structure (employee_id, basic, allowance, deduction) VALUES (?, ?, ?, ?)`,
+        [id, b, a, d]
+      );
+    }
+    console.log("✅ Step 3: Salary structure updated");
+
+    await connection.commit();
+    console.log(`[COMMIT] Employee ${id} updated successfully`);
+    res.send("Employee updated successfully");
+
   } catch (err) {
-    console.error("UPDATE EMPLOYEE DB ERROR:", err);
-    res.status(500).send("Database Error");
+    await connection.rollback();
+    console.error("UPDATE EMPLOYEE TRANSACTION ERROR:", err);
+    if (err.code === "ER_DUP_ENTRY") {
+      return res.status(400).send("Duplicate Entry: Email already exists for another user.");
+    }
+    res.status(500).send(`Database Error: ${err.message}`);
+  } finally {
+    connection.release();
   }
 });
 
@@ -223,11 +297,6 @@ app.delete("/delete-employee/:id", async (req, res) => {
     await db.execute("DELETE FROM leave_request WHERE employee_id=?", [id]);
     await db.execute("DELETE FROM payroll WHERE employee_id=?", [id]);
     await db.execute("DELETE FROM salary_structure WHERE employee_id=?", [id]);
-
-    await db.execute(
-      "DELETE FROM users WHERE employee_id=?",
-      [id]
-      );
 
     // 3️⃣ Delete employee
     await db.execute("DELETE FROM employee WHERE employee_id=?", [id]);
@@ -375,11 +444,11 @@ app.post("/apply-leave", async (req, res) => {
       return res.status(400).json({ error: "All fields are required" });
     }
 
-    // Check for overlapping leave
+    // Check for overlapping leave (completely encompassing, starting within, or ending within)
     const [existing] = await db.execute(
-      `SELECT * FROM leave_request WHERE employee_id=? 
-       AND ((start_date BETWEEN ? AND ?) OR (end_date BETWEEN ? AND ?))`,
-      [employee_id, start_date, end_date, start_date, end_date]
+      `SELECT * FROM leave_request WHERE employee_id=? AND status != 'Rejected'
+       AND (? <= end_date AND ? >= start_date)`,
+      [employee_id, start_date, end_date]
     );
 
     if (existing.length > 0) {
@@ -431,8 +500,12 @@ app.put("/approve-leave/:id", async (req, res) => {
     const empEmail = leave[0].email;
     const empName = leave[0].full_name;
 
+    // Use UTC for accurate day calculations across timezones
+    const start = new Date(fromDate);
+    const end = new Date(toDate);
     const diff = Math.ceil(
-      (new Date(toDate) - new Date(fromDate)) / (1000 * 60 * 60 * 24)
+      (Date.UTC(end.getFullYear(), end.getMonth(), end.getDate()) - 
+       Date.UTC(start.getFullYear(), start.getMonth(), start.getDate())) / (1000 * 60 * 60 * 24)
     ) + 1;
 
     await db.execute(
