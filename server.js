@@ -349,51 +349,42 @@ app.post("/login", async (req, res) => {
 app.get("/attendance", async (req, res) => {
   try {
     const { role, employee_id, date } = req.query;
-    let sql = "SELECT * FROM attendance";
+    let sql = `
+      SELECT a.*, e.full_name 
+      FROM attendance a 
+      JOIN employee e ON a.employee_id = e.employee_id
+    `;
 
     if (role === "Employee") {
-
-      sql += " WHERE employee_id = ?";
-    
+      sql += " WHERE a.employee_id = ?";
       if (date) {
-        sql += " AND attendance_date = ?";
+        sql += " AND a.attendance_date = ?";
         const [rows] = await db.execute(sql, [employee_id, date]);
         return res.json(rows);
       }
-    
       const [rows] = await db.execute(sql, [employee_id]);
       return res.json(rows);
-    
-  } else if (role === "Manager") {
-
-    let sql = `
-      SELECT a.*
-      FROM attendance a
-      JOIN employee e ON a.employee_id = e.employee_id
-      WHERE e.manager_id = ?
-    `;
-  
-    if (date) {
-      sql += " AND a.attendance_date = ?";
-      const [rows] = await db.execute(sql, [employee_id, date]);
+    } else if (role === "Manager") {
+      sql += " WHERE e.manager_id = ?";
+      if (date) {
+        sql += " AND a.attendance_date = ?";
+        const [rows] = await db.execute(sql, [employee_id, date]);
+        return res.json(rows);
+      }
+      const [rows] = await db.execute(sql, [employee_id]);
+      return res.json(rows);
+    } else {
+      // HR/Admin
+      if (date) {
+        sql += " WHERE a.attendance_date = ?";
+        const [rows] = await db.execute(sql, [date]);
+        return res.json(rows);
+      }
+      const [rows] = await db.execute(sql);
       return res.json(rows);
     }
-  
-    const [rows] = await db.execute(sql, [employee_id]);
-    return res.json(rows);
-  } else {
-
-    if (date) {
-      sql += " WHERE attendance_date = ?";
-      const [rows] = await db.execute(sql, [date]);
-      return res.json(rows);
-    }
-  
-    const [rows] = await db.execute(sql);
-    return res.json(rows);
-  }
-
   } catch (err) {
+    console.error("ATTENDANCE FETCH ERROR:", err);
     res.status(500).send("Database Error");
   }
 });
@@ -488,13 +479,21 @@ app.put("/approve-leave/:id", async (req, res) => {
   try {
 
     const { id } = req.params;
+    const { approver_id } = req.body;
 
     const [leave] = await db.execute(
       "SELECT l.employee_id, l.start_date, l.end_date, e.email, e.full_name FROM leave_request l JOIN employee e ON l.employee_id = e.employee_id WHERE l.leave_id=?",
       [id]
     );
 
+    if (!leave.length) return res.status(404).send("Leave request not found");
+
     const empId = leave[0].employee_id;
+
+    if (Number(approver_id) === Number(empId)) {
+      return res.status(400).send("Self-approval is not allowed");
+    }
+
     const fromDate = leave[0].start_date;
     const toDate = leave[0].end_date;
     const empEmail = leave[0].email;
@@ -542,13 +541,21 @@ app.put("/reject-leave/:id", async (req, res) => {
   try {
 
     const { id } = req.params;
+    const { approver_id } = req.body;
 
     const [leave] = await db.execute(
       "SELECT l.employee_id, l.start_date, l.end_date, e.email, e.full_name FROM leave_request l JOIN employee e ON l.employee_id = e.employee_id WHERE l.leave_id=?",
       [id]
     );
 
+    if (!leave.length) return res.status(404).send("Leave request not found");
+
     const empId = leave[0].employee_id;
+
+    if (Number(approver_id) === Number(empId)) {
+      return res.status(400).send("Self-rejection is not allowed");
+    }
+
     const fromDate = leave[0].start_date;
     const toDate = leave[0].end_date;
     const empEmail = leave[0].email;
@@ -581,9 +588,28 @@ app.put("/reject-leave/:id", async (req, res) => {
 // 🔹 PAYROLL
 app.get("/payroll", async (req, res) => {
   try {
-    const [rows] = await db.execute("SELECT * FROM payroll");
-    res.json(rows);
+    const { role, employee_id } = req.query;
+    let sql = "SELECT * FROM payroll";
+
+    if (role === "Employee") {
+      sql += " WHERE employee_id = ?";
+      const [rows] = await db.execute(sql, [employee_id]);
+      return res.json(rows);
+    } else if (role === "Manager") {
+      sql = `
+        SELECT p.* FROM payroll p
+        JOIN employee e ON p.employee_id = e.employee_id
+        WHERE e.manager_id = ?
+      `;
+      const [rows] = await db.execute(sql, [employee_id]);
+      return res.json(rows);
+    } else {
+      // HR/Admin see all
+      const [rows] = await db.execute(sql);
+      res.json(rows);
+    }
   } catch (err) {
+    console.error("PAYROLL FETCH ERROR:", err);
     res.status(500).send("Database Error");
   }
 });
