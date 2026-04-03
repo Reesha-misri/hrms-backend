@@ -9,6 +9,14 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+app.use((req, res, next) => {
+  console.log(`${req.method} ${req.url}`);
+  next();
+});
+
+app.get("/health", (req, res) => res.send("OK"));
+app.get("/test-forgot", (req, res) => res.send("Test route for forgot password exists"));
+
 // 🔹 MySQL Connection
 let db;
 
@@ -32,7 +40,7 @@ async function initDB() {
     console.error("Database pool creation failed:", err);
   }
 }
-initDB();
+// initDB(); // Moved to the end
 
 // 🔹 TEST ROUTE
 app.get("/", (req, res) => res.send("Backend running"));
@@ -52,6 +60,26 @@ app.get("/roles", async (req, res) => {
   try {
     const [rows] = await db.execute("SELECT * FROM roles");
     res.json(rows);
+  } catch (err) {
+    res.status(500).send("Database Error");
+  }
+});
+
+app.post("/add-designation", async (req, res) => {
+  try {
+    const { designation_title } = req.body;
+    const [result] = await db.execute("INSERT INTO designation (designation_title) VALUES (?)", [designation_title]);
+    res.json({ designation_id: result.insertId });
+  } catch (err) {
+    res.status(500).send("Database Error");
+  }
+});
+
+app.post("/add-role", async (req, res) => {
+  try {
+    const { role_name } = req.body;
+    const [result] = await db.execute("INSERT INTO roles (role_name) VALUES (?)", [role_name]);
+    res.json({ role_id: result.insertId });
   } catch (err) {
     res.status(500).send("Database Error");
   }
@@ -639,12 +667,21 @@ app.get("/employee/:id", async (req, res) => {
       SELECT 
         e.employee_id,
         e.full_name,
+        e.email,
         e.department_name,
         d.designation_title,
+        r.role_name,
+        m.full_name AS manager_name,
         e.communication_address,
-        e.permanent_address
+        e.permanent_address,
+        COALESCE(s.basic, 0) AS basic,
+        COALESCE(s.allowance, 0) AS allowance,
+        COALESCE(s.deduction, 0) AS deduction
       FROM employee e
       LEFT JOIN designation d ON e.designation_id = d.designation_id
+      LEFT JOIN roles r ON e.role_id = r.role_id
+      LEFT JOIN employee m ON e.manager_id = m.employee_id
+      LEFT JOIN salary_structure s ON e.employee_id = s.employee_id
       WHERE e.employee_id = ?
     `;
 
@@ -652,6 +689,7 @@ app.get("/employee/:id", async (req, res) => {
     res.json(rows[0]);
 
   } catch (err) {
+    console.error("DEBUG: /employee/:id error:", err);
     res.status(500).send("Database error");
   }
 });
@@ -697,3 +735,37 @@ app.get("/audit-logs", async (req,res)=>{
     res.status(500).send("Database Error");
   }
 });
+
+// 🔹 FORGOT PASSWORD
+app.post("/forgot-password", async (req, res) => {
+  try {
+    const { email, newPassword } = req.body;
+    console.log(`[FORGOT PASSWORD] Attempt for email: ${email}`);
+    
+    // Check if user exists
+    const [user] = await db.execute("SELECT * FROM users WHERE email=?", [email]);
+    if (user.length === 0) {
+      console.log(`[FORGOT PASSWORD] User not found: ${email}`);
+      return res.status(404).send("User with this email does not exist");
+    }
+
+    const employee_id = user[0].employee_id;
+
+    // Update password
+    await db.execute("UPDATE users SET password=? WHERE email=?", [newPassword, email]);
+    console.log(`[FORGOT PASSWORD] Password updated for employee_id: ${employee_id}`);
+
+    // Log action
+    await db.execute(
+      "INSERT INTO audit_log (employee_id, action) VALUES (?, ?)",
+      [employee_id, "Password Reset"]
+    );
+
+    res.send("Password updated successfully");
+  } catch (err) {
+    console.error("FORGOT PASSWORD ERROR:", err);
+    res.status(500).send("Database Error");
+  }
+});
+
+initDB();
