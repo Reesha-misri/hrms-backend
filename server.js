@@ -4,49 +4,69 @@ const express = require("express");
 const mysql = require("mysql2/promise");
 const cors = require("cors");
 const { sendEmail } = require("./emailService");
-   
+const dashboardRoutes = require("./routes/dashboard");
+
 const app = express();
-app.use(cors());
+const allowedOrigins = [process.env.FRONTEND_URL, "http://localhost:3000"].filter(Boolean);
+app.use(cors({
+  origin: true,
+  credentials: true
+}));
 app.use(express.json());
 
 app.use((req, res, next) => {
   console.log(`${req.method} ${req.url}`);
   next();
 });
+app.use("/api/dashboard", dashboardRoutes);
 
-app.get("/health", (req, res) => res.send("OK"));
-app.get("/test-forgot", (req, res) => res.send("Test route for forgot password exists"));
+app.get("/api/health", (req, res) => res.send("OK"));
+app.get("/api/test-forgot", (req, res) => res.send("Test route for forgot password exists"));
+
+const path = require("path");
 
 // 🔹 MySQL Connection
 let db;
 
-async function initDB() { 
+async function initDB() {
   try {
+    console.log("Connecting to:", process.env.DB_HOST);
     db = mysql.createPool({
-      host: process.env.host,
-      user: process.env.user,
-      password: process.env.password, 
-      database: process.env.database,
+      host: process.env.DB_HOST,
+      user: process.env.DB_USER,
+      password: process.env.DB_PASSWORD,
+      database: process.env.DB_NAME,
+      port: process.env.DB_PORT || 3306,
       waitForConnections: true,
-      connectionLimit: 10,
+      connectionLimit: 50,
       queueLimit: 0
     });
 
-    console.log("✅ MySQL Connection Pool Created");
+    // 🔹 Test connection immediately
+    const conn = await db.getConnection();
+    console.log("✅ Successfully connected to MySQL");
+    conn.release();
 
-    // Start server after DB is ready (Pool doesn't need to wait for a single connection)
-    app.listen(process.env.port, () => console.log(`🚀 Server running on port ${process.env.port}`));
+    // Start server after DB is ready
+    const port = process.env.PORT || 3001;
+    app.listen(port, () => console.log(`🚀 Server running on port ${port}`));
   } catch (err) {
-    console.error("Database pool creation failed:", err);
+    console.error("❌ DATABASE INITIALIZATION FAILED:", err);
+    // Log more details for debugging
+    console.error("Config used:", {
+      host: process.env.DB_HOST,
+      user: process.env.DB_USER,
+      db: process.env.DB_NAME
+    });
   }
 }
-// initDB(); // Moved to the end
 
-// 🔹 TEST ROUTE
-app.get("/", (req, res) => res.send("Backend running"));
+// 🔹 SERVE FRONTEND (Added for combined hosting)
+app.use(express.static(path.join(__dirname, "public")));
+
 
 // 🔹 DESIGNATIONS
-app.get("/designations", async (req, res) => {
+app.get("/api/designations", async (req, res) => {
   try {
     const [rows] = await db.execute("SELECT * FROM designation");
     res.json(rows);
@@ -56,7 +76,7 @@ app.get("/designations", async (req, res) => {
 });
 
 // 🔹 ROLES
-app.get("/roles", async (req, res) => {
+app.get("/api/roles", async (req, res) => {
   try {
     const [rows] = await db.execute("SELECT * FROM roles");
     res.json(rows);
@@ -65,7 +85,7 @@ app.get("/roles", async (req, res) => {
   }
 });
 
-app.post("/add-designation", async (req, res) => {
+app.post("/api/add-designation", async (req, res) => {
   try {
     const { designation_title } = req.body;
     const [result] = await db.execute("INSERT INTO designation (designation_title) VALUES (?)", [designation_title]);
@@ -75,7 +95,7 @@ app.post("/add-designation", async (req, res) => {
   }
 });
 
-app.post("/add-role", async (req, res) => {
+app.post("/api/add-role", async (req, res) => {
   try {
     const { role_name } = req.body;
     const [result] = await db.execute("INSERT INTO roles (role_name) VALUES (?)", [role_name]);
@@ -86,7 +106,7 @@ app.post("/add-role", async (req, res) => {
 });
 
 // 🔹 EMPLOYEES with Role-Based Access
-app.get("/employees", async (req, res) => {
+app.get("/api/employees", async (req, res) => {
   try {
     const { role, employee_id } = req.query; // get role & employee_id from frontend
 
@@ -125,7 +145,6 @@ app.get("/employees", async (req, res) => {
     } else {
       // Admin/HR sees all employees
       const [rows] = await db.execute(sql);
-      console.log(rows);
       return res.json(rows);
     }
 
@@ -135,7 +154,7 @@ app.get("/employees", async (req, res) => {
   }
 });
 
-app.post("/add-employee", async (req, res) => {
+app.post("/api/add-employee", async (req, res) => {
   const connection = await db.getConnection(); // Get a connection for the transaction
   try {
     const {
@@ -220,7 +239,7 @@ app.post("/add-employee", async (req, res) => {
 });
 
 // 🔹 UPDATE EMPLOYEE (with login update)
-app.put("/update-employee/:id", async (req, res) => {
+app.put("/api/update-employee/:id", async (req, res) => {
   const connection = await db.getConnection();
   const id = parseInt(req.params.id);
   try {
@@ -309,7 +328,7 @@ app.put("/update-employee/:id", async (req, res) => {
 });
 
 // 🔹 DELETE EMPLOYEE
-app.delete("/delete-employee/:id", async (req, res) => {
+app.delete("/api/delete-employee/:id", async (req, res) => {
   try {
     const { id } = req.params;
 
@@ -337,7 +356,7 @@ app.delete("/delete-employee/:id", async (req, res) => {
   }
 });
 // 🔹 LOGIN WITH ROLE & PERMISSIONS
-app.post("/login", async (req, res) => {
+app.post("/api/login", async (req, res) => {
   try {
     const { email, password } = req.body;
 
@@ -374,7 +393,7 @@ app.post("/login", async (req, res) => {
   }
 });
 // 🔹 ATTENDANCE
-app.get("/attendance", async (req, res) => {
+app.get("/api/attendance", async (req, res) => {
   try {
     const { role, employee_id, date } = req.query;
     let sql = `
@@ -418,7 +437,7 @@ app.get("/attendance", async (req, res) => {
 });
 
 
-app.post("/checkin", async (req, res) => {
+app.post("/api/checkin", async (req, res) => {
   try {
     const { employee_id } = req.body;
     const [existing] = await db.execute("SELECT * FROM attendance WHERE employee_id=? AND attendance_date=CURDATE()", [employee_id]);
@@ -431,7 +450,7 @@ app.post("/checkin", async (req, res) => {
   }
 });
 
-app.put("/checkout/:id", async (req, res) => {
+app.put("/api/checkout/:id", async (req, res) => {
   try {
     const { id } = req.params;
     await db.execute("UPDATE attendance SET check_out=NOW() WHERE employee_id=? AND attendance_date=CURDATE()", [id]);
@@ -442,7 +461,7 @@ app.put("/checkout/:id", async (req, res) => {
 });
 
 // 🔹 LEAVE MANAGEMENT
-app.get("/leaves", async (req, res) => {
+app.get("/api/leaves", async (req, res) => {
   try {
     const [rows] = await db.execute(`
     SELECT l.*, e.full_name
@@ -450,12 +469,12 @@ app.get("/leaves", async (req, res) => {
     JOIN employee e
     ON l.employee_id = e.employee_id
     `);
-        res.json(rows);
+    res.json(rows);
   } catch (err) {
     res.status(500).send("Database Error");
   }
 });
-app.post("/apply-leave", async (req, res) => {
+app.post("/api/apply-leave", async (req, res) => {
   try {
     const { employee_id, start_date, end_date, reason, leave_type } = req.body;
 
@@ -503,7 +522,7 @@ app.post("/apply-leave", async (req, res) => {
     res.status(500).json({ error: "Database Error" });
   }
 });
-app.put("/approve-leave/:id", async (req, res) => {
+app.put("/api/approve-leave/:id", async (req, res) => {
   try {
 
     const { id } = req.params;
@@ -531,8 +550,8 @@ app.put("/approve-leave/:id", async (req, res) => {
     const start = new Date(fromDate);
     const end = new Date(toDate);
     const diff = Math.ceil(
-      (Date.UTC(end.getFullYear(), end.getMonth(), end.getDate()) - 
-       Date.UTC(start.getFullYear(), start.getMonth(), start.getDate())) / (1000 * 60 * 60 * 24)
+      (Date.UTC(end.getFullYear(), end.getMonth(), end.getDate()) -
+        Date.UTC(start.getFullYear(), start.getMonth(), start.getDate())) / (1000 * 60 * 60 * 24)
     ) + 1;
 
     await db.execute(
@@ -554,7 +573,7 @@ app.put("/approve-leave/:id", async (req, res) => {
     const subject = "Leave Request Approved";
     const text = `Hi ${empName}, your leave request from ${new Date(fromDate).toLocaleDateString()} to ${new Date(toDate).toLocaleDateString()} has been approved.`;
     const html = `<p>Hi <b>${empName}</b>,</p><p>Your leave request from <b>${new Date(fromDate).toLocaleDateString()}</b> to <b>${new Date(toDate).toLocaleDateString()}</b> has been <b>approved</b>.</p>`;
-    
+
     sendEmail(empEmail, subject, text, html).catch(err => console.error("Failed to send approval email:", err));
 
     res.send("Leave Approved");
@@ -565,7 +584,7 @@ app.put("/approve-leave/:id", async (req, res) => {
   }
 });
 
-app.put("/reject-leave/:id", async (req, res) => {
+app.put("/api/reject-leave/:id", async (req, res) => {
   try {
 
     const { id } = req.params;
@@ -596,7 +615,7 @@ app.put("/reject-leave/:id", async (req, res) => {
 
     await db.execute(
       "INSERT INTO audit_log (employee_id, action) VALUES (?,?)",
-      [empId,"Leave Rejected"]
+      [empId, "Leave Rejected"]
     );
 
     // Send Rejection Email
@@ -614,7 +633,7 @@ app.put("/reject-leave/:id", async (req, res) => {
 });
 
 // 🔹 PAYROLL
-app.get("/payroll", async (req, res) => {
+app.get("/api/payroll", async (req, res) => {
   try {
     const { role, employee_id } = req.query;
     let sql = "SELECT * FROM payroll";
@@ -642,7 +661,7 @@ app.get("/payroll", async (req, res) => {
   }
 });
 
-app.post("/generate-payroll", async (req, res) => {
+app.post("/api/generate-payroll", async (req, res) => {
   try {
     const { employee_id, month } = req.body;
     const [rows] = await db.execute("SELECT basic, allowance, deduction FROM salary_structure WHERE employee_id=?", [employee_id]);
@@ -652,16 +671,16 @@ app.post("/generate-payroll", async (req, res) => {
 
     await db.execute("INSERT INTO payroll (employee_id, month, total_salary, generated_date) VALUES (?, ?, ?, CURDATE())",
       [employee_id, month, total_salary]);
-      await db.execute(
-        "INSERT INTO audit_log (employee_id, action) VALUES (?,?)",
-        [employee_id,"Payroll Generated"]
-        );
+    await db.execute(
+      "INSERT INTO audit_log (employee_id, action) VALUES (?,?)",
+      [employee_id, "Payroll Generated"]
+    );
     res.send("Payroll generated");
   } catch (err) {
     res.status(500).send("Database Error");
   }
 });
-app.get("/employee/:id", async (req, res) => {
+app.get("/api/employee/:id", async (req, res) => {
   try {
     const sql = `
       SELECT 
@@ -693,7 +712,7 @@ app.get("/employee/:id", async (req, res) => {
     res.status(500).send("Database error");
   }
 });
-app.get("/leave-balance/:id", async (req, res) => {
+app.get("/api/leave-balance/:id", async (req, res) => {
   try {
 
     const { id } = req.params;
@@ -713,8 +732,8 @@ app.get("/leave-balance/:id", async (req, res) => {
     res.status(500).send("Database Error");
   }
 });
-app.get("/audit-logs", async (req,res)=>{
-  try{
+app.get("/api/audit-logs", async (req, res) => {
+  try {
 
     const [rows] = await db.execute(`
       SELECT 
@@ -731,17 +750,17 @@ app.get("/audit-logs", async (req,res)=>{
 
     res.json(rows);
 
-  }catch(err){
+  } catch (err) {
     res.status(500).send("Database Error");
   }
 });
 
 // 🔹 FORGOT PASSWORD
-app.post("/forgot-password", async (req, res) => {
+app.post("/api/forgot-password", async (req, res) => {
   try {
     const { email, newPassword } = req.body;
     console.log(`[FORGOT PASSWORD] Attempt for email: ${email}`);
-    
+
     // Check if user exists
     const [user] = await db.execute("SELECT * FROM users WHERE email=?", [email]);
     if (user.length === 0) {
@@ -768,4 +787,22 @@ app.post("/forgot-password", async (req, res) => {
   }
 });
 
+// 🔹 CATCH-ALL ROUTE (Must be at the end)
+// Serves the React app for any route that doesn't match an API
+app.get(/.*/, (req, res) => {
+  try {
+    const indexPath = path.join(__dirname, 'public', 'index.html');
+    if (require('fs').existsSync(indexPath)) {
+      res.sendFile(indexPath);
+    } else {
+      res.status(404).send("Error: index.html not found in public folder");
+    }
+  } catch (err) {
+    console.error("SPA ERROR:", err);
+    res.status(500).send("Server Error loading SPA");
+  }
+});
+
 initDB();
+
+
