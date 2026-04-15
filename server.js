@@ -439,13 +439,24 @@ app.get("/api/attendance", async (req, res) => {
 
 app.post("/api/checkin", async (req, res) => {
   try {
-    const { employee_id } = req.body;
-    const [existing] = await db.execute("SELECT * FROM attendance WHERE employee_id=? AND attendance_date=CURDATE()", [employee_id]);
+    const { employee_id, date } = req.body;
+    // Use provided date or fallback to server's CURDATE()
+    const checkDate = date || new Date().toISOString().split('T')[0];
+
+    const [existing] = await db.execute(
+      "SELECT * FROM attendance WHERE employee_id=? AND attendance_date=?", 
+      [employee_id, checkDate]
+    );
+
     if (existing.length > 0) return res.send("Already checked in today");
 
-    await db.execute("INSERT INTO attendance (employee_id, attendance_date, check_in, status) VALUES (?, CURDATE(), NOW(), 'Present')", [employee_id]);
+    await db.execute(
+      "INSERT INTO attendance (employee_id, attendance_date, check_in, status) VALUES (?, ?, NOW(), 'Present')", 
+      [employee_id, checkDate]
+    );
     res.send("Check-in recorded");
   } catch (err) {
+    console.error("CHECKIN ERROR:", err);
     res.status(500).send("Database Error");
   }
 });
@@ -453,9 +464,16 @@ app.post("/api/checkin", async (req, res) => {
 app.put("/api/checkout/:id", async (req, res) => {
   try {
     const { id } = req.params;
-    await db.execute("UPDATE attendance SET check_out=NOW() WHERE employee_id=? AND attendance_date=CURDATE()", [id]);
+    const { date } = req.body;
+    const checkDate = date || new Date().toISOString().split('T')[0];
+
+    await db.execute(
+      "UPDATE attendance SET check_out=NOW() WHERE employee_id=? AND attendance_date=?", 
+      [id, checkDate]
+    );
     res.send("Check-out recorded");
   } catch (err) {
+    console.error("CHECKOUT ERROR:", err);
     res.status(500).send("Database Error");
   }
 });
