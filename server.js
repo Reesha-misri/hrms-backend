@@ -1,5 +1,5 @@
 // server.js
-require('dotenv').config();
+require('dotenv').config({ path: require('path').join(__dirname, '.env') });
 const express = require("express");
 const mysql = require("mysql2/promise");
 const cors = require("cors");
@@ -30,13 +30,19 @@ let db;
 
 async function initDB() {
   try {
-    console.log("Connecting to:", process.env.DB_HOST);
+    const host = process.env.DB_HOST || "MYSQL5045.site4now.net";
+    const user = process.env.DB_USER || "ac39fb_hrms";
+    const password = process.env.DB_PASSWORD || "Aadheesh@123";
+    const database = process.env.DB_NAME || "db_ac39fb_hrms";
+    const port = process.env.DB_PORT || 3306;
+
+    console.log("Connecting to:", host);
     db = mysql.createPool({
-      host: process.env.DB_HOST,
-      user: process.env.DB_USER,
-      password: process.env.DB_PASSWORD,
-      database: process.env.DB_NAME,
-      port: process.env.DB_PORT || 3306,
+      host: host,
+      user: user,
+      password: password,
+      database: database,
+      port: port,
       waitForConnections: true,
       connectionLimit: 50,
       queueLimit: 0
@@ -48,15 +54,15 @@ async function initDB() {
     conn.release();
 
     // Start server after DB is ready
-    const port = process.env.PORT || 3001;
-    app.listen(port, () => console.log(`🚀 Server running on port ${port}`));
+    const serverPort = process.env.PORT || 3001;
+    app.listen(serverPort, () => console.log(`🚀 Server running on port ${serverPort}`));
   } catch (err) {
     console.error("❌ DATABASE INITIALIZATION FAILED:", err);
     // Log more details for debugging
     console.error("Config used:", {
-      host: process.env.DB_HOST,
-      user: process.env.DB_USER,
-      db: process.env.DB_NAME
+      host: process.env.DB_HOST || "MYSQL5045.site4now.net",
+      user: process.env.DB_USER || "ac39fb_hrms",
+      db: process.env.DB_NAME || "db_ac39fb_hrms"
     });
   }
 }
